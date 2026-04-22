@@ -699,31 +699,51 @@ class LatticeItem(QGraphicsItem):
                 painter.drawLine(QPointF(0, y), QPointF(self._w, y))
 
         # ── Líneas de terceras entre nodos de la escala ──────────────────────
+        WRAP = total_rows - 1  # = 24
+
+        # Límites Y: los bordes físicos del lattice (abs_row=0 abajo, abs_row=WRAP arriba)
+        y_bottom = self._h - (0 + 1) * row_h           # abs_row=0, fila más baja
+        y_top    = self._h - (WRAP + 1) * row_h         # abs_row=WRAP, fila más alta
+        clip_rect = QRectF(-self._w, y_top, self._w * 3, y_bottom - y_top)
+
         painter.setPen(QPen(QColor(80, 80, 80), 1.2))
-        for abs_row in range(total_rows):
-            pc = (abs_row % 12 * 7) % 12   # inversa: fila → pc
-            # inversa de (pc*7)%12: pc = (row*7)%12  (7 y 12 son coprimos, inv(7,12)=7)
+        # Iterar desde -4 para cubrir nodos virtuales justo por encima del tope
+        for abs_row in range(-4, total_rows + 4):
             pc = (abs_row % 12 * 7) % 12
             if not (self._mask & (1 << pc)):
                 continue
             for pos in range(n_chrom):
                 if pos % 12 != pc:
                     continue
-                p1 = self._node_pos(pos, abs_row)
                 for dx, dy in [(4, 4), (3, -3)]:
-                    pos2    = pos + dx
+                    pos2     = pos + dx
                     abs_row2 = abs_row + dy
                     if pos2 < 0 or pos2 >= n_chrom:
-                        continue
-                    if abs_row2 < 0 or abs_row2 >= total_rows:
                         continue
                     pc2 = pos2 % 12
                     if not (self._mask & (1 << pc2)):
                         continue
-                    # Verificar que abs_row2 corresponde a pc2
                     if abs_row2 % 12 != (pc2 * 7) % 12:
                         continue
-                    painter.drawLine(p1, self._node_pos(pos2, abs_row2))
+
+                    # Solo dibujar si al menos un extremo está en el rango visible
+                    in1 = 0 <= abs_row  < total_rows
+                    in2 = 0 <= abs_row2 < total_rows
+                    if not in1 and not in2:
+                        continue
+
+                    p1 = self._node_pos(pos,  abs_row)
+                    p2 = self._node_pos(pos2, abs_row2)
+
+                    if in1 and in2:
+                        # Ambos dentro: sin clip
+                        painter.drawLine(p1, p2)
+                    else:
+                        # Uno fuera: recortar al área entre líneas rosas
+                        painter.save()
+                        painter.setClipRect(clip_rect)
+                        painter.drawLine(p1, p2)
+                        painter.restore()
 
         # ── Nodos ────────────────────────────────────────────────────────────
         for abs_row in range(total_rows):
