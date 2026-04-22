@@ -946,6 +946,411 @@ class _PianoGraphicsItem(QGraphicsItem):
             )
 
 
+
+# ---------------------------------------------------------------------------
+# Datos del lattice de acordes (coordenadas fijas, grados relativos)
+# ---------------------------------------------------------------------------
+# (semitone_x, row_y, label, line)
+# line: T=tónica, M=mediante, D=dominante, S=sensible, N=novena, U=undécima
+CHORD_NODES = [
+    ( 0,  0, 'I',    'T'),
+    ( 2,-10, 'II',   'M'),
+    ( 3, -3, 'iii',  'M'),
+    ( 4,  4, 'III',  'M'),
+    ( 5, 11, 'IV',   'M'),
+    ( 6, -6, 'v',    'D'),
+    ( 7,  1, 'V',    'D'),
+    ( 8,  8, 'vi',   'D'),
+    ( 9, -9, 'VI',   'S'),
+    (10, -2, 'vii',  'S'),
+    (11,  5, 'VII',  'S'),
+    (13, -5, 'ii',   'N'),
+    (14,  2, 'II',   'N'),
+    (15,  9, 'iii',  'N'),
+    (17, -1, 'IV',   'U'),
+    (18,  6, 'V',    'U'),
+]
+
+# Semitono relativo de cada grado respecto a la raíz del acorde
+DEGREE_SEMITONE = {
+    'I': 0, 'ii': 1, 'II': 2, 'iii': 3, 'III': 4,
+    'IV': 5, 'v': 6, 'V': 7, 'vi': 8, 'VI': 9,
+    'vii': 10, 'VII': 11,
+}
+
+LINE_COLORS = {
+    'T': QColor(220, 60, 120),
+    'M': QColor(220, 60, 120),
+    'D': QColor(220, 60, 120),
+    'S': QColor(220, 60, 120),
+    'N': QColor(220, 60, 120),
+    'U': QColor(220, 60, 120),
+}
+
+LINE_LABELS = ['T', 'M', 'D', 'S', 'N', 'U']
+LINE_X = {
+    'T': [0],
+    'M': [2, 3, 4, 5],
+    'D': [6, 7, 8],
+    'S': [9, 10, 11],
+    'N': [13, 14, 15],
+    'U': [17, 18],
+}
+
+
+# ---------------------------------------------------------------------------
+# ChordSelectorView  —  lattice fijo de grados relativos
+# ---------------------------------------------------------------------------
+class ChordSelectorView(QGraphicsView):
+
+    # Señal: lista de semitonos del acorde (relativo a raíz del acorde)
+    chordChanged = Signal(list)
+
+    MARGIN = 6
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scale_mask  = SCALES['Major']
+        self._chord_root  = 0   # pitch class de la raíz del acorde
+        self._selected    = {}  # line -> label del nodo seleccionado o None
+
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setBackgroundBrush(QBrush(QColor('#ffffff')))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(200, 200)
+
+        self._build_scene()
+
+    def _build_scene(self):
+        self._scene.clear()
+        self._node_items = []   # lista de ChordNodeItem
+
+        # Rango de coordenadas
+        xs = [n[0] for n in CHORD_NODES]
+        ys = [n[1] for n in CHORD_NODES]
+        self._x_min, self._x_max = min(xs), max(xs)
+        self._y_min, self._y_max = min(ys), max(ys)
+
+        # Unidad: usamos una escena de 400x300, luego fitInView escala
+        W, H = 400.0, 300.0
+        self._W, self._H = W, H
+        dx = (W - 2*self.MARGIN) / (self._x_max - self._x_min + 2)
+        dy = (H - 2*self.MARGIN) / (self._y_max - self._y_min + 2)
+        unit = min(dx, dy)
+        self._unit = unit
+
+        def scene_pos(sx, sy):
+            x = self.MARGIN + (sx - self._x_min + 1) * unit
+            y = H - self.MARGIN - (sy - self._y_min + 1) * unit
+            return QPointF(x, y)
+
+        self._scene_pos = scene_pos
+        r = unit * 1.1
+
+        # Líneas de conexión (terceras y quintas) — fondo
+        connections = []
+        for i, (x1, y1, lbl1, line1) in enumerate(CHORD_NODES):
+            for j, (x2, y2, lbl2, line2) in enumerate(CHORD_NODES):
+                dx_, dy_ = x2 - x1, y2 - y1
+                if (dx_, dy_) in [(4, 4), (3, -3), (7, 1)]:
+                    connections.append((i, j, dx_))
+
+        for i, j, dx_ in connections:
+            n1 = CHORD_NODES[i]
+            n2 = CHORD_NODES[j]
+            p1 = scene_pos(n1[0], n1[1])
+            p2 = scene_pos(n2[0], n2[1])
+            if dx_ == 7:   # quinta — muy sutil, amarillo pálido
+                color = QColor(210, 200, 140)
+                width = 0.6
+            else:          # tercera — gris claro
+                color = QColor(180, 180, 180)
+                width = 1.0
+            item = self._scene.addLine(p1.x(), p1.y(), p2.x(), p2.y(),
+                                       QPen(color, width))
+            item.setZValue(0)
+
+        # Líneas rosas casi-verticales (T, M, D, S, N, U)
+        # Ecuación en lattice: sy = 7*sx + c  → en pantalla la pendiente es -7
+        # Para cada grupo, tomamos el primer y último nodo y extendemos la línea
+        group_nodes = {}
+        for sx, sy, lbl, line in CHORD_NODES:
+            group_nodes.setdefault(line, []).append((sx, sy))
+
+        for line_name in LINE_LABELS:
+            nodes_in_line = group_nodes[line_name]
+            # Punto central del grupo para la etiqueta
+            sx_center = sum(n[0] for n in nodes_in_line) / len(nodes_in_line)
+            sy_center = sum(n[1] for n in nodes_in_line) / len(nodes_in_line)
+
+            # La línea tiene pendiente lattice: Δsy/Δsx = 7
+            # En pantalla (y invertido): Δy_screen/Δx_screen = -7
+            # Extender desde y=H hasta y=0 de la escena
+            # x_screen = MARGIN + (sx - x_min + 1) * unit
+            # y_screen = H - MARGIN - (sy - y_min + 1) * unit
+            # Dado un punto (sx0, sy0) del grupo:
+            sx0, sy0 = nodes_in_line[0]
+            x0 = self.MARGIN + (sx0 - self._x_min + 1) * unit
+            y0 = H - self.MARGIN - (sy0 - self._y_min + 1) * unit
+            # Pendiente en pantalla: dy_screen / dx_screen = -7
+            # x = x0 + t,  y = y0 - 7*t
+            # Extender: t tal que y=0 → t = y0/7; t tal que y=H → t = (y0-H)/7
+            t_top = y0 / 7.0
+            t_bot = (y0 - H) / 7.0
+            x_top = x0 + t_top
+            x_bot = x0 + t_bot
+
+            pen = QPen(QColor(220, 60, 120), 1.2)
+            item = self._scene.addLine(x_bot, H, x_top, 0, pen)
+            item.setZValue(1)
+
+            # Etiqueta justo sobre el punto inferior de la línea
+            lbl_item = self._scene.addSimpleText(line_name)
+            lbl_item.setFont(QFont('Arial', max(6, int(unit * 0.55))))
+            lbl_item.setBrush(QBrush(QColor(220, 60, 120)))
+            lbl_item.setPos(x_bot - lbl_item.boundingRect().width()/2,
+                            H - self.MARGIN + 2)
+            lbl_item.setZValue(5)
+
+        # Nodos
+        for sx, sy, lbl, line in CHORD_NODES:
+            p = scene_pos(sx, sy)
+            node = ChordNodeItem(sx, sy, lbl, line, r, p)
+            node.clicked.connect(self._on_node_clicked)
+            self._scene.addItem(node)
+            self._node_items.append(node)
+
+        self._scene.setSceneRect(QRectF(0, 0, W, H + unit))
+        self._update_nodes()
+
+    def _on_node_clicked(self, line, label):
+        if self._selected.get(line) == label:
+            self._selected[line] = None   # deseleccionar
+        else:
+            self._selected[line] = label  # seleccionar (reemplaza anterior)
+        self._update_nodes()
+        self.chordChanged.emit(self._get_chord())
+
+    def _get_chord(self):
+        semitones = []
+        for line, label in self._selected.items():
+            if label is not None:
+                semitones.append(DEGREE_SEMITONE[label])
+        return sorted(set(semitones))
+
+    def set_scale(self, root_note, scale_mask):
+        had_chord_root = self._chord_root
+        self._scale_mask = scale_mask
+        self._chord_root = root_note
+        # Si había una raíz de acorde seleccionada, recalcular el acorde
+        if had_chord_root is not None and any(v for v in self._selected.values()):
+            self._selected = {}
+            self._auto_select_chord()
+        else:
+            self._selected = {}
+        self._update_nodes()
+
+    def set_chord_root(self, chord_root):
+        self._chord_root = chord_root
+        self._selected = {}   # limpiar selección anterior
+        self._auto_select_chord()
+        self._update_nodes()
+        self.chordChanged.emit(self._get_chord())
+
+    def _in_scale(self, degree_label):
+        """¿El grado (label) está en la escala activa con la raíz actual?"""
+        deg    = DEGREE_SEMITONE[degree_label]
+        abs_pc = (self._chord_root + deg) % 12
+        return bool(self._scale_mask & (1 << abs_pc))
+
+    def _auto_select_chord(self):
+        """Selecciona el mejor acorde disponible por orden de preferencia."""
+        # Siempre I en T
+        self._selected['T'] = 'I'
+
+        # Candidatos en orden de preferencia
+        # (line_M, label_M, line_D, label_D, nombre)
+        candidates = [
+            ('M', 'III', 'D', 'V',  'Mayor'),
+            ('M', 'iii', 'D', 'V',  'Menor'),
+            ('M', 'iii', 'D', 'v',  'Disminuido'),
+            ('M', 'III', 'D', 'vi', 'Aumentado'),
+            (None, None, 'D', 'V',  'Power'),
+        ]
+        for line_m, lbl_m, line_d, lbl_d, name in candidates:
+            m_ok = (line_m is None) or self._in_scale(lbl_m)
+            d_ok = self._in_scale(lbl_d)
+            if m_ok and d_ok:
+                if line_m:
+                    self._selected[line_m] = lbl_m
+                self._selected[line_d] = lbl_d
+                return
+        # Si nada encaja, solo I
+
+    def _update_nodes(self):
+        for node in self._node_items:
+            deg     = DEGREE_SEMITONE[node._label]
+            abs_pc  = (self._chord_root + deg) % 12
+            in_scale= bool(self._scale_mask & (1 << abs_pc))
+            selected= (self._selected.get(node._line) == node._label)
+            node.set_state(in_scale, selected)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+
+
+# ---------------------------------------------------------------------------
+# ChordNodeItem  —  nodo clickeable del selector de acordes
+# ---------------------------------------------------------------------------
+class ChordNodeItem(QGraphicsObject):
+
+    clicked = Signal(str, str)   # (line, label)
+
+    def __init__(self, sx, sy, label, line, r, pos, parent=None):
+        super().__init__(parent)
+        self._sx    = sx
+        self._sy    = sy
+        self._label = label
+        self._line  = line
+        self._r     = r
+        self._in_scale = True
+        self._selected = False
+        self.setPos(pos)
+        self.setZValue(10)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setAcceptedMouseButtons(Qt.LeftButton)
+
+    def set_state(self, in_scale, selected):
+        self._in_scale = in_scale
+        self._selected = selected
+        self.update()
+
+    def boundingRect(self):
+        r = self._r + 4
+        return QRectF(-r, -r, 2*r, 2*r)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+        r = self._r
+
+        if self._selected:
+            fill = QColor(30, 120, 200)
+            text_color = QColor(255, 255, 255)
+            pen = QPen(QColor(10, 60, 140), 1.5)
+        elif self._in_scale:
+            fill = QColor(230, 240, 255)
+            text_color = QColor(30, 80, 180)
+            pen = QPen(QColor(100, 150, 220), 1.2)
+        else:
+            fill = QColor(230, 230, 230)
+            text_color = QColor(160, 160, 160)
+            pen = QPen(QColor(180, 180, 180), 0.8)
+
+        painter.setBrush(QBrush(fill))
+        painter.setPen(pen)
+        painter.drawEllipse(QRectF(-r, -r, 2*r, 2*r))
+
+        font = QFont('Arial', max(5, int(r * 0.75)))
+        font.setBold(self._selected)
+        painter.setFont(font)
+        painter.setPen(QPen(text_color))
+        fm = painter.fontMetrics()
+        tw = fm.horizontalAdvance(self._label)
+        painter.drawText(int(-tw/2), int(fm.height()/4), self._label)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._in_scale:
+            self.clicked.emit(self._line, self._label)
+        event.accept()
+
+
+# ---------------------------------------------------------------------------
+# ChordRootBar  —  12 botones de raíz del acorde
+# ---------------------------------------------------------------------------
+class ChordRootBar(QWidget):
+
+    rootSelected = Signal(int)   # pitch class seleccionado
+
+    BTN_STYLE_ACTIVE = """
+        QPushButton {
+            font-size: 11px; font-weight: bold;
+            border: 1px solid #1D9E75; border-radius: 3px;
+            background: #E1F5EE; color: #0F6E56;
+            padding: 0px;
+        }
+        QPushButton:hover   { background: #9FE1CB; }
+        QPushButton:checked { background: #1D9E75; color: #fff; }
+    """
+    BTN_STYLE_INACTIVE = """
+        QPushButton {
+            font-size: 10px;
+            border: 1px solid #ddd; border-radius: 3px;
+            background: #f5f5f5; color: #bbb;
+            padding: 0px;
+        }
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._scale_root  = 0
+        self._scale_mask  = SCALES['Major']
+        self._selected_pc = None
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self._buttons = []
+        for i in range(12):
+            btn = QPushButton()
+            btn.setCheckable(True)
+            btn.setFixedHeight(28)
+            btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            btn.clicked.connect(lambda checked, idx=i: self._on_btn(idx))
+            layout.addWidget(btn)
+            self._buttons.append(btn)
+
+        self._refresh()
+
+    def set_scale(self, root_note, scale_mask):
+        self._scale_root = root_note
+        self._scale_mask = scale_mask
+        # Si la raíz seleccionada ya no está en la escala, deseleccionar
+        if self._selected_pc is not None:
+            if not (self._scale_mask & (1 << self._selected_pc)):
+                self._selected_pc = None
+        self._refresh()
+
+    def _on_btn(self, idx):
+        pc = (self._scale_root + idx) % 12
+        if not (self._scale_mask & (1 << pc)):
+            return
+        if self._selected_pc == pc:
+            self._selected_pc = None
+        else:
+            self._selected_pc = pc
+        self._refresh()
+        if self._selected_pc is not None:
+            self.rootSelected.emit(self._selected_pc)
+
+    def _refresh(self):
+        for i, btn in enumerate(self._buttons):
+            pc      = (self._scale_root + i) % 12
+            in_scale= bool(self._scale_mask & (1 << pc))
+            selected= (self._selected_pc == pc)
+            btn.setText(NOTE_NAMES[pc])
+            btn.setEnabled(in_scale)
+            btn.setChecked(selected)
+            btn.setStyleSheet(self.BTN_STYLE_ACTIVE if in_scale
+                              else self.BTN_STYLE_INACTIVE)
+
+
 # ---------------------------------------------------------------------------
 # Widget completo con botones de escala
 # ---------------------------------------------------------------------------
@@ -1044,10 +1449,15 @@ class ChromaticWheelWidget(QWidget):
         self.wheel_view.rootChanged.connect(self._on_root_changed)
         right_col_layout.addWidget(self.wheel_view, stretch=0)
 
-        # Espacio reservado para selector de acordes y demás
-        self.bottom_area = QWidget()
-        self.bottom_area.setMinimumHeight(200)
-        right_col_layout.addWidget(self.bottom_area, stretch=1)
+        # Selector de acordes
+        self.chord_selector = ChordSelectorView()
+        self.chord_selector.chordChanged.connect(self._on_chord_changed)
+        right_col_layout.addWidget(self.chord_selector, stretch=1)
+
+        # Botones de raíz del acorde
+        self.chord_root_bar = ChordRootBar()
+        self.chord_root_bar.rootSelected.connect(self._on_chord_root_selected)
+        right_col_layout.addWidget(self.chord_root_bar, stretch=0)
 
         left_layout.addWidget(right_col, stretch=1)
 
@@ -1066,13 +1476,29 @@ class ChromaticWheelWidget(QWidget):
         # Estado inicial
         self._scale_buttons['Major'].setChecked(True)
         self.piano.set_scale(0, SCALES['Major'])
+        self.chord_root_bar.set_scale(0, SCALES['Major'])
+        self.chord_selector.set_scale(0, SCALES['Major'])
 
     def _on_scale_changed(self, root: int, mask: int):
         self.piano.set_scale(root, mask)
+        self.chord_root_bar.set_scale(root, mask)
+        self.chord_selector.set_scale(root, mask)
+
+    def _on_chord_root_selected(self, pc: int):
+        self.chord_selector.set_chord_root(pc)
+
+    def _on_chord_changed(self, semitones: list):
+        pass   # aquí se conectará la lógica futura
 
     def _on_root_changed(self):
         for btn in self._scale_buttons.values():
             btn.setChecked(False)
+        # Al girar la rueda cambia la raíz pero los LEDs (escala) se mantienen
+        # Recalcular con la nueva raíz+escala
+        root = self.wheel_view.get_root_note()
+        mask = self.wheel_view.get_scale_mask()
+        self.chord_root_bar.set_scale(root, mask)
+        self.chord_selector.set_scale(root, mask)
 
     def _on_led_manually_toggled(self, note_index: int, state: bool):
         for btn in self._scale_buttons.values():
