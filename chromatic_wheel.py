@@ -597,122 +597,322 @@ class ChromaticWheelView(QGraphicsView):
 # ---------------------------------------------------------------------------
 # Piano con líneas verticales
 # ---------------------------------------------------------------------------
-class PianoWidget(QWidget):
+
+# ---------------------------------------------------------------------------
+# Constantes del lattice
+# ---------------------------------------------------------------------------
+# El círculo de quintas: C G D A E B F# Db Ab Eb Bb F (= notas * 7 % 12)
+# Posición Y de cada pitch-class en el lattice:
+#   fila = (pc * 7) % 12   →  0=C, 1=G, 2=D, 3=A, 4=E, 5=B, 6=F#, 7=Db, 8=Ab, 9=Eb, 10=Bb, 11=F
+# Con N_REPS repeticiones verticales, el total de filas = 12 * N_REPS
+
+N_REPS = 3   # repeticiones verticales del círculo de quintas (3 o 4)
+
+
+# ---------------------------------------------------------------------------
+# LatticeItem  —  QGraphicsItem con el diagrama de notas
+# ---------------------------------------------------------------------------
+class LatticeItem(QGraphicsItem):
     """
-    Panel derecho basado en MelodyView.py:
-      - BLACK_KEY_WIDTH es la unidad cromática universal.
-      - WHITE_KEY_WIDTH = BLACK_KEY_WIDTH * 12 / 7
-      - Líneas verticales arriba: x = margin + (pos + 0.5) * bkw  (una por semitono)
-      - Teclado abajo: misma x base, blancas con wkw, negras con bkw
-    Todo alineado porque comparten la misma unidad.
+    Lattice fijo de nodos en coordenadas de escena.
+    X = MARGIN + (abs_chrom_pos + 0.5) * bkw
+    Y = (total_rows - 1 - row) * row_h   donde row = (pc*7)%12 + rep*12
+    Los nodos y sus posiciones son siempre los mismos.
+    Lo que cambia con la tonalidad son:
+      - tamaño/estilo de los círculos (raíz, escala, fuera)
+      - líneas de terceras (solo entre notas de la escala)
+      - líneas horizontales de tónica y tritono
     """
 
-    WHITE_KEYS  = set([0, 2, 4, 5, 7, 9, 11])
+    def __init__(self, root_note, scale_mask, scene_w, scene_h,
+                 bkw, margin, oct_start, oct_end, parent=None):
+        super().__init__(parent)
+        self._root      = root_note
+        self._mask      = scale_mask
+        self._w         = scene_w
+        self._h         = scene_h
+        self._bkw       = bkw
+        self._margin    = margin
+        self._oct_start = oct_start
+        self._oct_end   = oct_end
+        self._n_reps    = N_REPS
+        self._row_h     = scene_h / (12 * self._n_reps)
+
+    def update_scale(self, root_note, scale_mask):
+        self._root = root_note
+        self._mask = scale_mask
+        self.update()
+
+    def boundingRect(self):
+        return QRectF(0, 0, self._w, self._h)
+
+    def _node_pos(self, abs_chrom, rep):
+        """Posición (x, y) de un nodo dado su posición cromática absoluta y repetición."""
+        pc   = abs_chrom % 12
+        row  = (pc * 7) % 12 + rep * 12
+        total_rows = 12 * self._n_reps
+        x = self._margin + (abs_chrom + 0.5) * self._bkw
+        y = self._h - (row + 1) * self._row_h
+        return QPointF(x, y)
+
+    def paint(self, painter, option, widget=None):
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        n_chrom    = 12 * (self._oct_end - self._oct_start)
+        row_h      = self._row_h
+        r_node     = max(6.0, self._bkw * 0.55)
+
+        # ── Líneas horizontales: tónica (continua) y tritono (discontinua) ───
+        root_row_base   = (self._root * 7) % 12
+        tritone_row_base = ((self._root + 6) % 12 * 7) % 12
+        total_rows = 12 * self._n_reps
+
+        for rep in range(self._n_reps):
+            for (base_row, dashed) in [(root_row_base, False), (tritone_row_base, True)]:
+                row = base_row + rep * 12
+                y   = self._h - (row + 1) * row_h + row_h / 2
+                pen = QPen(QColor(220, 60, 120), 1.2)
+                if dashed:
+                    pen.setStyle(Qt.DashLine)
+                painter.setPen(pen)
+                painter.drawLine(QPointF(0, y), QPointF(self._w, y))
+
+        # ── Líneas de terceras/sextas entre nodos de la escala ───────────────
+        # Para cada nodo activo, conectar si el destino también está activo:
+        #   Tercera mayor  → (+4 semit, +4 filas)
+        #   Tercera menor  → (+3 semit, -3 filas)
+        #   Sexta mayor    → (-3 semit, +3 filas)  (inversa de 3ª menor)
+        #   Sexta menor    → (-4 semit, -4 filas)  (inversa de 3ª mayor)
+        painter.setPen(QPen(QColor(80, 80, 80), 1.2))
+        for rep in range(self._n_reps):
+            for pos in range(n_chrom):
+                pc = pos % 12
+                if not (self._mask & (1 << pc)):
+                    continue
+                row = (pc * 7) % 12
+
+                for dx, dy in [(4, 4), (3, -3), (-3, 3), (-4, -4)]:
+                    pos2 = pos + dx
+                    if pos2 < 0 or pos2 >= n_chrom:
+                        continue
+                    pc2 = pos2 % 12
+                    if not (self._mask & (1 << pc2)):
+                        continue
+                    row2  = (pc2 * 7) % 12
+                    # rep2: la rep donde row2 + rep2*12 = row + rep*12 + dy
+                    target = row + rep * 12 + dy
+                    rep2   = (target - row2) // 12
+                    if rep2 < 0 or rep2 >= self._n_reps:
+                        continue
+                    painter.drawLine(self._node_pos(pos,  rep),
+                                     self._node_pos(pos2, rep2))
+
+        # ── Nodos ────────────────────────────────────────────────────────────
+        for rep in range(self._n_reps):
+            for pos in range(n_chrom):
+                pc      = pos % 12
+                p       = self._node_pos(pos, rep)
+                is_root = (pc == self._root)
+                in_scale= bool(self._mask & (1 << pc))
+
+                # Color del nodo usando el esquema de quintas
+                sat = 1.0 if in_scale else 0.12
+                color = note_color(pc, sat, 0.88 if in_scale else 0.9)
+
+                if in_scale:
+                    painter.setBrush(QBrush(color))
+                    painter.setPen(QPen(QColor(60, 60, 60), 1.5))
+                    painter.drawEllipse(p, r_node, r_node)
+                else:
+                    # Punto pequeño
+                    painter.setBrush(QBrush(QColor(180, 180, 180)))
+                    painter.setPen(Qt.NoPen)
+                    painter.drawEllipse(p, r_node * 0.28, r_node * 0.28)
+                    continue   # sin etiqueta ni círculo extra
+
+                # Círculo extra para la tónica
+                if is_root:
+                    painter.setBrush(Qt.NoBrush)
+                    painter.setPen(QPen(QColor(20, 20, 20), 1.5))
+                    painter.drawEllipse(p, r_node + 4, r_node + 4)
+
+                # Etiqueta
+                lbl  = NOTE_NAMES[pc]
+                font = QFont('monospace', max(5, int(r_node * 0.85)))
+                painter.setFont(font)
+                painter.setPen(QPen(QColor(20, 20, 20)))
+                fm = painter.fontMetrics()
+                painter.drawText(
+                    int(p.x() - fm.horizontalAdvance(lbl) / 2),
+                    int(p.y() + fm.height() / 4),
+                    lbl
+                )
+
+
+# ---------------------------------------------------------------------------
+# PianoView  —  QGraphicsView con lattice + teclado
+# ---------------------------------------------------------------------------
+class PianoWidget(QGraphicsView):
+    """
+    QGraphicsView con dos QGraphicsItems apilados:
+      - LatticeItem  (zona superior, height = scene_h - PIANO_H)
+      - PianoItem    (zona inferior, height = PIANO_H)
+    Comparten la misma unidad cromática bkw.
+    """
+
+    WHITE_KEYS   = set([0, 2, 4, 5, 7, 9, 11])
     OCTAVE_START = 2
-    OCTAVE_END   = 7      # excluido, como en MelodyView (range: 2..6 inclusive)
-    MARGIN       = 9      # px a cada lado, igual que en MelodyView ("9 + ... + 9")
-    PIANO_H      = 100    # altura del teclado en coordenadas de escena
-    BK_H_RATIO   = 0.55   # alto tecla negra / alto teclado
+    OCTAVE_END   = 7
+    MARGIN       = 9
+    PIANO_H      = 100
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._root_note  = 0
         self._scale_mask = SCALES['Major']
+
+        self._scene = QGraphicsScene(self)
+        self.setScene(self._scene)
+        self.setRenderHint(QPainter.Antialiasing)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setBackgroundBrush(QBrush(QColor('#ffffff')))
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setMinimumSize(300, 300)
 
-    def set_scale(self, root_note: int, scale_mask: int):
+        self._build_scene()
+
+    def _bkw_for_width(self, w):
+        n_chrom = 12 * (self.OCTAVE_END - self.OCTAVE_START)
+        return (w - 2 * self.MARGIN) / n_chrom
+
+    def _build_scene(self):
+        W   = 1200.0   # escena en coordenadas lógicas; fitInView la escala
+        bkw = self._bkw_for_width(W)
+        wkw = bkw * 12.0 / 7.0
+        PH  = float(self.PIANO_H)
+
+        # Altura del lattice: N_REPS * 12 filas, cada fila = bkw * 1.8
+        row_h    = bkw * 1.8
+        lattice_h = 12 * N_REPS * row_h
+        total_h   = lattice_h + PH
+
+        self._lattice_item = LatticeItem(
+            self._root_note, self._scale_mask,
+            W, lattice_h, bkw, self.MARGIN,
+            self.OCTAVE_START, self.OCTAVE_END
+        )
+        self._piano_item = _PianoGraphicsItem(
+            self._root_note, self._scale_mask,
+            W, PH, bkw, wkw, self.MARGIN,
+            self.OCTAVE_START, self.OCTAVE_END
+        )
+
+        self._lattice_item.setPos(0, 0)
+        self._piano_item.setPos(0, lattice_h)
+
+        self._scene.addItem(self._lattice_item)
+        self._scene.addItem(self._piano_item)
+        self._scene.setSceneRect(QRectF(0, 0, W, total_h))
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+
+    def set_scale(self, root_note, scale_mask):
         self._root_note  = root_note
         self._scale_mask = scale_mask
+        self._lattice_item.update_scale(root_note, scale_mask)
+        self._piano_item.update_scale(root_note, scale_mask)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.fitInView(self._scene.sceneRect(), Qt.KeepAspectRatio)
+
+
+# ---------------------------------------------------------------------------
+# _PianoGraphicsItem  —  teclado como QGraphicsItem
+# ---------------------------------------------------------------------------
+class _PianoGraphicsItem(QGraphicsItem):
+
+    WHITE_KEYS = set([0, 2, 4, 5, 7, 9, 11])
+    BK_H_RATIO = 0.55
+
+    def __init__(self, root_note, scale_mask,
+                 width, height, bkw, wkw, margin,
+                 oct_start, oct_end, parent=None):
+        super().__init__(parent)
+        self._root  = root_note
+        self._mask  = scale_mask
+        self._w     = width
+        self._h     = height
+        self._bkw   = bkw
+        self._wkw   = wkw
+        self._mg    = margin
+        self._os    = oct_start
+        self._oe    = oct_end
+
+    def update_scale(self, root_note, scale_mask):
+        self._root = root_note
+        self._mask = scale_mask
         self.update()
 
-    # -- Métricas (igual que MelodyView) -------------------------------------
+    def boundingRect(self):
+        return QRectF(0, 0, self._w, self._h)
 
-    def _bkw(self):
-        """Ancho de un semitono = BLACK_KEY_WIDTH."""
-        n_chrom = 12 * (self.OCTAVE_END - self.OCTAVE_START)
-        return (self.width() - 2 * self.MARGIN) / n_chrom
-
-    # -- Paint ---------------------------------------------------------------
-
-    def paintEvent(self, event):
-        painter = QPainter(self)
+    def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
+        bkw = self._bkw
+        wkw = self._wkw
+        h   = self._h
+        bk_h = h * self.BK_H_RATIO
 
-        bkw  = self._bkw()
-        wkw  = bkw * 12.0 / 7.0
-        n_chrom = 12 * (self.OCTAVE_END - self.OCTAVE_START)
-        piano_h = self.PIANO_H
-        piano_y = self.height() - piano_h
-        bk_h    = piano_h * self.BK_H_RATIO
+        # Fondo
+        painter.fillRect(QRectF(0, 0, self._w, h), QColor(245, 245, 240))
 
-        painter.fillRect(self.rect(), QColor('#ffffff'))
-
-        # ── Líneas verticales (zona superior) ────────────────────────────────
-        # x = MARGIN + (pos + 0.5) * bkw   — exactamente como PianoRollItem
-        for pos in range(n_chrom):
-            pc = pos % 12
-            is_root  = (pc == self._root_note)
-            in_scale = bool(self._scale_mask & (1 << pc))
-            x = self.MARGIN + (pos + 0.5) * bkw
-            if is_root:
-                pen = QPen(QColor('#888888'), 1.2)
-            elif in_scale:
-                pen = QPen(QColor('#bbbbbb'), 0.8)
-            else:
-                pen = QPen(QColor('#dddddd'), 0.6)
-            painter.setPen(pen)
-            painter.drawLine(QPointF(x, 0), QPointF(x, piano_y))
-
-        # ── Teclas blancas ───────────────────────────────────────────────────
+        # Teclas blancas
         wpos = 0
-        for n in range(12 * self.OCTAVE_START, 12 * self.OCTAVE_END):
+        for n in range(12 * self._os, 12 * self._oe):
             pc = n % 12
             if pc not in self.WHITE_KEYS:
                 continue
-            x1 = self.MARGIN + wpos * wkw
+            x1 = self._mg + wpos * wkw
             x2 = x1 + wkw
             wpos += 1
-            is_root = (pc == self._root_note)
-            fill = QColor(255, 255, 220) if is_root else QColor(255, 255, 255)
+            fill = QColor(255, 255, 220) if (pc == self._root) else QColor(255, 255, 255)
             painter.setBrush(QBrush(fill))
             painter.setPen(QPen(QColor(128, 128, 128), 1))
-            painter.drawRect(QRectF(x1, piano_y, wkw, piano_h))
-            # Etiqueta
+            painter.drawRect(QRectF(x1, 0, wkw, h))
             lbl  = NOTE_NAMES[pc]
             font = QFont('monospace', max(5, int(wkw * 0.42)))
             painter.setFont(font)
             painter.setPen(QPen(QColor(0, 0, 0)))
             fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(lbl)
-            painter.drawText(int((x1 + x2)/2 - tw/2),
-                             int(piano_y + piano_h * 0.93 + fm.height()/2), lbl)
+            painter.drawText(
+                int((x1 + x2) / 2 - fm.horizontalAdvance(lbl) / 2),
+                int(h * 0.93 + fm.height() / 2), lbl
+            )
 
-        # ── Teclas negras ────────────────────────────────────────────────────
+        # Teclas negras
         cpos = 0
-        for n in range(12 * self.OCTAVE_START, 12 * self.OCTAVE_END):
+        for n in range(12 * self._os, 12 * self._oe):
             pc = n % 12
-            x1 = self.MARGIN + cpos * bkw
+            x1 = self._mg + cpos * bkw
             x2 = x1 + bkw
             cpos += 1
             if pc in self.WHITE_KEYS:
                 continue
-            is_root = (pc == self._root_note)
-            fill = QColor(0, 0, 80) if is_root else QColor(0, 0, 0)
+            fill = QColor(0, 0, 80) if (pc == self._root) else QColor(0, 0, 0)
             painter.setBrush(QBrush(fill))
             painter.setPen(QPen(QColor(128, 128, 128), 1))
-            painter.drawRect(QRectF(x1, piano_y, bkw, bk_h))
-            # Etiqueta
+            painter.drawRect(QRectF(x1, 0, bkw, bk_h))
             lbl  = NOTE_NAMES[pc]
             font = QFont('monospace', max(4, int(bkw * 0.42)))
             painter.setFont(font)
             painter.setPen(QPen(QColor(255, 255, 255)))
             fm = painter.fontMetrics()
-            tw = fm.horizontalAdvance(lbl)
-            painter.drawText(int((x1 + x2)/2 - tw/2),
-                             int(piano_y + bk_h * 0.55 + fm.height()/2), lbl)
-
-        painter.end()
+            painter.drawText(
+                int((x1 + x2) / 2 - fm.horizontalAdvance(lbl) / 2),
+                int(bk_h * 0.55 + fm.height() / 2), lbl
+            )
 
 
 # ---------------------------------------------------------------------------
