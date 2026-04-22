@@ -504,6 +504,7 @@ class ChromaticWheelView(QGraphicsView):
 
     scaleChanged = Signal(int, int)
     ledToggled   = Signal(int, bool)   # reenviada desde WheelItem
+    rootChanged  = Signal()            # emitida al terminar de girar
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -574,6 +575,7 @@ class ChromaticWheelView(QGraphicsView):
 
     def _on_rotation_done(self):
         self._update_info()
+        self.rootChanged.emit()
 
     def _update_info(self):
         root = self._wheel.get_root_note()
@@ -794,7 +796,7 @@ class PianoWidget(QGraphicsView):
         PH  = float(self.PIANO_H)
 
         # Altura del lattice: N_REPS * 12 filas, cada fila = bkw * 1.8
-        row_h    = bkw * 1.8
+        row_h    = bkw
         lattice_h = 12 * N_REPS * row_h
         total_h   = lattice_h + PH
 
@@ -882,13 +884,13 @@ class _PianoGraphicsItem(QGraphicsItem):
             painter.setPen(QPen(QColor(128, 128, 128), 1))
             painter.drawRect(QRectF(x1, 0, wkw, h))
             lbl  = NOTE_NAMES[pc]
-            font = QFont('monospace', max(5, int(wkw * 0.42)))
+            font = QFont('monospace', max(5, int(wkw * 0.38)))
             painter.setFont(font)
             painter.setPen(QPen(QColor(0, 0, 0)))
             fm = painter.fontMetrics()
             painter.drawText(
                 int((x1 + x2) / 2 - fm.horizontalAdvance(lbl) / 2),
-                int(h * 0.93 + fm.height() / 2), lbl
+                int(h - fm.descent() - 2), lbl
             )
 
         # Teclas negras
@@ -905,13 +907,13 @@ class _PianoGraphicsItem(QGraphicsItem):
             painter.setPen(QPen(QColor(128, 128, 128), 1))
             painter.drawRect(QRectF(x1, 0, bkw, bk_h))
             lbl  = NOTE_NAMES[pc]
-            font = QFont('monospace', max(4, int(bkw * 0.42)))
+            font = QFont('monospace', max(4, int(bkw * 0.38)))
             painter.setFont(font)
             painter.setPen(QPen(QColor(255, 255, 255)))
             fm = painter.fontMetrics()
             painter.drawText(
                 int((x1 + x2) / 2 - fm.horizontalAdvance(lbl) / 2),
-                int(bk_h * 0.55 + fm.height() / 2), lbl
+                int(bk_h - fm.descent() - 2), lbl
             )
 
 
@@ -946,6 +948,7 @@ class ChromaticWheelWidget(QWidget):
         self.wheel_view.scaleChanged.connect(self.scaleChanged)
         self.wheel_view.scaleChanged.connect(self._on_scale_changed)
         self.wheel_view.ledToggled.connect(self._on_led_manually_toggled)
+        self.wheel_view.rootChanged.connect(self._on_root_changed)
         left_layout.addWidget(self.wheel_view, stretch=1)
 
         # Botones de escalas
@@ -1023,6 +1026,10 @@ class ChromaticWheelWidget(QWidget):
     def _on_scale_changed(self, root: int, mask: int):
         self.piano.set_scale(root, mask)
 
+    def _on_root_changed(self):
+        for btn in self._scale_buttons.values():
+            btn.setChecked(False)
+
     def _on_led_manually_toggled(self, note_index: int, state: bool):
         for btn in self._scale_buttons.values():
             btn.setChecked(False)
@@ -1030,7 +1037,11 @@ class ChromaticWheelWidget(QWidget):
     def _on_scale_btn(self, name: str):
         for btn_name, btn in self._scale_buttons.items():
             btn.setChecked(btn_name == name)
-        self.wheel_view.set_scale_mask(SCALES[name])
+        root = self.wheel_view.get_root_note()
+        mask = SCALES[name]
+        # Rotar la máscara de intervalos relativos a pitch classes absolutos
+        rotated = ((mask << root) | (mask >> (12 - root))) & 0xFFF
+        self.wheel_view.set_scale_mask(rotated)
 
     def _clear_all(self):
         for btn in self._scale_buttons.values():
