@@ -967,75 +967,90 @@ class ChromaticWheelWidget(QWidget):
         root_layout.setContentsMargins(8, 8, 8, 8)
         root_layout.setSpacing(8)
 
-        # --- Lado izquierdo: rueda + botones de escala ---
+        # --- Lado izquierdo: dos columnas (botones | rueda+espacio) ---
         left_widget = QWidget()
-        left_layout = QVBoxLayout(left_widget)
+        left_layout = QHBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(6)
 
-        self.wheel_view = ChromaticWheelView()
-        self.wheel_view.scaleChanged.connect(self.scaleChanged)
-        self.wheel_view.scaleChanged.connect(self._on_scale_changed)
-        self.wheel_view.ledToggled.connect(self._on_led_manually_toggled)
-        self.wheel_view.rootChanged.connect(self._on_root_changed)
-        left_layout.addWidget(self.wheel_view, stretch=1)
-
-        # Botones de escalas
+        # Columna de botones de escala (izquierda)
         btn_frame = QFrame()
         btn_layout = QVBoxLayout(btn_frame)
         btn_layout.setSpacing(4)
         btn_layout.setContentsMargins(0, 0, 0, 0)
 
+        btn_style = """
+            QPushButton {
+                font-size: 11px;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                background: #fff;
+                padding: 2px 6px;
+                text-align: left;
+            }
+            QPushButton:hover { background: #f0f0ee; }
+            QPushButton:checked {
+                background: #E1F5EE;
+                border-color: #1D9E75;
+                color: #0F6E56;
+                font-weight: bold;
+            }
+        """
+
         self._scale_buttons = {}
-        scales_rows = [
-            ['Major', 'Natural minor', 'Harmonic minor', 'Melodic minor'],
-            ['Dorian', 'Phrygian', 'Lydian', 'Mixolydian'],
-            ['Penta major', 'Penta minor', 'Blues', 'Chromatic'],
+        scale_names = [
+            'Major', 'Natural minor', 'Harmonic minor', 'Melodic minor',
+            'Dorian', 'Phrygian', 'Lydian', 'Mixolydian',
+            'Penta major', 'Penta minor', 'Blues', 'Chromatic',
         ]
-        for row in scales_rows:
-            row_layout = QHBoxLayout()
-            row_layout.setSpacing(4)
-            for name in row:
-                btn = QPushButton(name)
-                btn.setCheckable(True)
-                btn.setFixedHeight(26)
-                btn.setStyleSheet("""
-                    QPushButton {
-                        font-size: 11px;
-                        border: 1px solid #ccc;
-                        border-radius: 4px;
-                        background: #fff;
-                        padding: 0 4px;
-                    }
-                    QPushButton:hover { background: #f0f0ee; }
-                    QPushButton:checked {
-                        background: #E1F5EE;
-                        border-color: #1D9E75;
-                        color: #0F6E56;
-                        font-weight: bold;
-                    }
-                """)
-                btn.clicked.connect(lambda checked, n=name: self._on_scale_btn(n))
-                self._scale_buttons[name] = btn
-                row_layout.addWidget(btn)
-            btn_layout.addLayout(row_layout)
+        for name in scale_names:
+            btn = QPushButton(name)
+            btn.setCheckable(True)
+            btn.setFixedHeight(24)
+            btn.setStyleSheet(btn_style)
+            btn.clicked.connect(lambda checked, n=name: self._on_scale_btn(n))
+            self._scale_buttons[name] = btn
+            btn_layout.addWidget(btn)
 
         # Botón limpiar
-        clear_btn = QPushButton('Limpiar todo')
-        clear_btn.setFixedHeight(26)
+        clear_btn = QPushButton('Limpiar')
+        clear_btn.setFixedHeight(24)
         clear_btn.setStyleSheet("""
             QPushButton {
                 font-size: 11px;
                 border: 1px solid #ccc;
                 border-radius: 4px;
                 background: #fff;
+                padding: 2px 6px;
             }
             QPushButton:hover { background: #f0eee8; }
         """)
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
+        btn_layout.addStretch()
 
-        left_layout.addWidget(btn_frame)
+        left_layout.addWidget(btn_frame, stretch=0)
+
+        # Columna derecha: rueda arriba + espacio libre abajo
+        right_col = QWidget()
+        right_col_layout = QVBoxLayout(right_col)
+        right_col_layout.setContentsMargins(0, 0, 0, 0)
+        right_col_layout.setSpacing(6)
+
+        self.wheel_view = ChromaticWheelView()
+        self.wheel_view.scaleChanged.connect(self.scaleChanged)
+        self.wheel_view.scaleChanged.connect(self._on_scale_changed)
+        self.wheel_view.ledToggled.connect(self._on_led_manually_toggled)
+        self.wheel_view.rootChanged.connect(self._on_root_changed)
+        right_col_layout.addWidget(self.wheel_view, stretch=0)
+
+        # Espacio reservado para selector de acordes y demás
+        self.bottom_area = QWidget()
+        self.bottom_area.setMinimumHeight(200)
+        right_col_layout.addWidget(self.bottom_area, stretch=1)
+
+        left_layout.addWidget(right_col, stretch=1)
+
         root_layout.addWidget(left_widget, stretch=0)
 
         # Separador vertical
