@@ -608,7 +608,7 @@ class ChromaticWheelView(QGraphicsView):
 #   fila = (pc * 7) % 12   →  0=C, 1=G, 2=D, 3=A, 4=E, 5=B, 6=F#, 7=Db, 8=Ab, 9=Eb, 10=Bb, 11=F
 # Con N_REPS repeticiones verticales, el total de filas = 12 * N_REPS
 
-N_REPS = 3   # repeticiones verticales del círculo de quintas (3 o 4)
+TOTAL_ROWS = 25  # filas totales del lattice (2 ciclos + 1 fila de cierre)
 
 
 # ---------------------------------------------------------------------------
@@ -637,8 +637,8 @@ class LatticeItem(QGraphicsItem):
         self._margin    = margin
         self._oct_start = oct_start
         self._oct_end   = oct_end
-        self._n_reps    = N_REPS
-        self._row_h     = scene_h / (12 * self._n_reps)
+        self._total_rows = TOTAL_ROWS
+        self._row_h      = scene_h / TOTAL_ROWS
 
     def update_scale(self, root_note, scale_mask):
         self._root = root_note
@@ -649,13 +649,10 @@ class LatticeItem(QGraphicsItem):
         r = max(6.0, self._bkw * 0.55) + 6   # r_node + margen círculo doble
         return QRectF(-r, -r, self._w + 2*r, self._h + 2*r)
 
-    def _node_pos(self, abs_chrom, rep):
-        """Posición (x, y) de un nodo dado su posición cromática absoluta y repetición."""
-        pc   = abs_chrom % 12
-        row  = (pc * 7) % 12 + rep * 12
-        total_rows = 12 * self._n_reps
+    def _node_pos(self, abs_chrom, abs_row):
+        """Posición (x,y) dado posición cromática y fila absoluta."""
         x = self._margin + (abs_chrom + 0.5) * self._bkw
-        y = self._h - (row + 1) * self._row_h
+        y = self._h - (abs_row + 1) * self._row_h
         return QPointF(x, y)
 
     def paint(self, painter, option, widget=None):
@@ -667,6 +664,7 @@ class LatticeItem(QGraphicsItem):
         n_chrom    = 12 * (self._oct_end - self._oct_start)
         row_h      = self._row_h
         r_node     = max(6.0, self._bkw * 0.55)
+        total_rows = self._total_rows
 
         # ── Líneas verticales de guía (fondo) ────────────────────────────────
         for pos in range(n_chrom):
@@ -684,60 +682,60 @@ class LatticeItem(QGraphicsItem):
             painter.drawLine(QPointF(x, 0), QPointF(x, self._h))
 
         # ── Líneas horizontales: tónica (continua) y tritono (discontinua) ───
-        root_row_base   = (self._root * 7) % 12
-        tritone_row_base = ((self._root + 6) % 12 * 7) % 12
-        total_rows = 12 * self._n_reps
+        root_base_row    = (self._root * 7) % 12
+        tritone_base_row = ((self._root + 6) % 12 * 7) % 12
 
-        for rep in range(self._n_reps):
-            for (base_row, dashed) in [(root_row_base, False), (tritone_row_base, True)]:
-                row = base_row + rep * 12
-                y   = self._h - (row + 1) * row_h
-                pen = QPen(QColor(220, 60, 120), 1.2)
-                if dashed:
-                    pen.setStyle(Qt.DashLine)
+        for abs_row in range(total_rows):
+            row_in_cycle = abs_row % 12
+            if row_in_cycle == root_base_row:
+                y = self._h - (abs_row + 1) * row_h
+                painter.setPen(QPen(QColor(220, 60, 120), 1.2))
+                painter.drawLine(QPointF(0, y), QPointF(self._w, y))
+            elif row_in_cycle == tritone_base_row:
+                y = self._h - (abs_row + 1) * row_h
+                pen = QPen(QColor(220, 60, 120), 1.0)
+                pen.setStyle(Qt.DashLine)
                 painter.setPen(pen)
                 painter.drawLine(QPointF(0, y), QPointF(self._w, y))
 
-        # ── Líneas de terceras/sextas entre nodos de la escala ───────────────
-        # Para cada nodo activo, conectar si el destino también está activo:
-        #   Tercera mayor  → (+4 semit, +4 filas)
-        #   Tercera menor  → (+3 semit, -3 filas)
-        #   Sexta mayor    → (-3 semit, +3 filas)  (inversa de 3ª menor)
-        #   Sexta menor    → (-4 semit, -4 filas)  (inversa de 3ª mayor)
+        # ── Líneas de terceras entre nodos de la escala ──────────────────────
         painter.setPen(QPen(QColor(80, 80, 80), 1.2))
-        for rep in range(self._n_reps):
+        for abs_row in range(total_rows):
+            pc = (abs_row % 12 * 7) % 12   # inversa: fila → pc
+            # inversa de (pc*7)%12: pc = (row*7)%12  (7 y 12 son coprimos, inv(7,12)=7)
+            pc = (abs_row % 12 * 7) % 12
+            if not (self._mask & (1 << pc)):
+                continue
             for pos in range(n_chrom):
-                pc = pos % 12
-                if not (self._mask & (1 << pc)):
+                if pos % 12 != pc:
                     continue
-                row = (pc * 7) % 12
-
-                for dx, dy in [(4, 4), (3, -3), (-3, 3), (-4, -4)]:
-                    pos2 = pos + dx
+                p1 = self._node_pos(pos, abs_row)
+                for dx, dy in [(4, 4), (3, -3)]:
+                    pos2    = pos + dx
+                    abs_row2 = abs_row + dy
                     if pos2 < 0 or pos2 >= n_chrom:
+                        continue
+                    if abs_row2 < 0 or abs_row2 >= total_rows:
                         continue
                     pc2 = pos2 % 12
                     if not (self._mask & (1 << pc2)):
                         continue
-                    row2  = (pc2 * 7) % 12
-                    # rep2: la rep donde row2 + rep2*12 = row + rep*12 + dy
-                    target = row + rep * 12 + dy
-                    rep2   = (target - row2) // 12
-                    if rep2 < 0 or rep2 >= self._n_reps:
+                    # Verificar que abs_row2 corresponde a pc2
+                    if abs_row2 % 12 != (pc2 * 7) % 12:
                         continue
-                    painter.drawLine(self._node_pos(pos,  rep),
-                                     self._node_pos(pos2, rep2))
+                    painter.drawLine(p1, self._node_pos(pos2, abs_row2))
 
         # ── Nodos ────────────────────────────────────────────────────────────
-        for rep in range(self._n_reps):
+        for abs_row in range(total_rows):
+            pc = (abs_row % 12 * 7) % 12
             for pos in range(n_chrom):
-                pc      = pos % 12
-                p       = self._node_pos(pos, rep)
-                is_root = (pc == self._root)
-                in_scale= bool(self._mask & (1 << pc))
+                if pos % 12 != pc:
+                    continue
+                p        = self._node_pos(pos, abs_row)
+                is_root  = (pc == self._root)
+                in_scale = bool(self._mask & (1 << pc))
 
-                # Color del nodo usando el esquema de quintas
-                sat = 1.0 if in_scale else 0.12
+                sat   = 1.0 if in_scale else 0.12
                 color = note_color(pc, sat, 0.88 if in_scale else 0.9)
 
                 if in_scale:
@@ -745,19 +743,16 @@ class LatticeItem(QGraphicsItem):
                     painter.setPen(QPen(QColor(60, 60, 60), 1.5))
                     painter.drawEllipse(p, r_node, r_node)
                 else:
-                    # Punto pequeño
                     painter.setBrush(QBrush(QColor(180, 180, 180)))
                     painter.setPen(Qt.NoPen)
                     painter.drawEllipse(p, r_node * 0.28, r_node * 0.28)
-                    continue   # sin etiqueta ni círculo extra
+                    continue
 
-                # Círculo extra para la tónica
                 if is_root:
                     painter.setBrush(Qt.NoBrush)
                     painter.setPen(QPen(QColor(20, 20, 20), 1.5))
                     painter.drawEllipse(p, r_node + 4, r_node + 4)
 
-                # Etiqueta
                 lbl  = NOTE_NAMES[pc]
                 font = QFont('monospace', max(5, int(r_node * 0.85)))
                 painter.setFont(font)
@@ -814,9 +809,8 @@ class PianoWidget(QGraphicsView):
         wkw = bkw * 12.0 / 7.0
         PH  = float(self.PIANO_H)
 
-        # Altura del lattice: N_REPS * 12 filas, cada fila = bkw * 1.8
-        row_h    = bkw
-        lattice_h = 12 * N_REPS * row_h
+        row_h     = bkw
+        lattice_h = TOTAL_ROWS * row_h
         total_h   = lattice_h + PH
 
         self._lattice_item = LatticeItem(
