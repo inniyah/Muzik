@@ -595,6 +595,127 @@ class ChromaticWheelView(QGraphicsView):
 
 
 # ---------------------------------------------------------------------------
+# Piano con líneas verticales
+# ---------------------------------------------------------------------------
+class PianoWidget(QWidget):
+    """
+    Panel derecho basado en MelodyView.py:
+      - BLACK_KEY_WIDTH es la unidad cromática universal.
+      - WHITE_KEY_WIDTH = BLACK_KEY_WIDTH * 12 / 7
+      - Líneas verticales arriba: x = margin + (pos + 0.5) * bkw  (una por semitono)
+      - Teclado abajo: misma x base, blancas con wkw, negras con bkw
+    Todo alineado porque comparten la misma unidad.
+    """
+
+    WHITE_KEYS  = set([0, 2, 4, 5, 7, 9, 11])
+    OCTAVE_START = 2
+    OCTAVE_END   = 7      # excluido, como en MelodyView (range: 2..6 inclusive)
+    MARGIN       = 9      # px a cada lado, igual que en MelodyView ("9 + ... + 9")
+    PIANO_H      = 100    # altura del teclado en coordenadas de escena
+    BK_H_RATIO   = 0.55   # alto tecla negra / alto teclado
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._root_note  = 0
+        self._scale_mask = SCALES['Major']
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setMinimumSize(300, 300)
+
+    def set_scale(self, root_note: int, scale_mask: int):
+        self._root_note  = root_note
+        self._scale_mask = scale_mask
+        self.update()
+
+    # -- Métricas (igual que MelodyView) -------------------------------------
+
+    def _bkw(self):
+        """Ancho de un semitono = BLACK_KEY_WIDTH."""
+        n_chrom = 12 * (self.OCTAVE_END - self.OCTAVE_START)
+        return (self.width() - 2 * self.MARGIN) / n_chrom
+
+    # -- Paint ---------------------------------------------------------------
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        bkw  = self._bkw()
+        wkw  = bkw * 12.0 / 7.0
+        n_chrom = 12 * (self.OCTAVE_END - self.OCTAVE_START)
+        piano_h = self.PIANO_H
+        piano_y = self.height() - piano_h
+        bk_h    = piano_h * self.BK_H_RATIO
+
+        painter.fillRect(self.rect(), QColor('#ffffff'))
+
+        # ── Líneas verticales (zona superior) ────────────────────────────────
+        # x = MARGIN + (pos + 0.5) * bkw   — exactamente como PianoRollItem
+        for pos in range(n_chrom):
+            pc = pos % 12
+            is_root  = (pc == self._root_note)
+            in_scale = bool(self._scale_mask & (1 << pc))
+            x = self.MARGIN + (pos + 0.5) * bkw
+            if is_root:
+                pen = QPen(QColor('#888888'), 1.2)
+            elif in_scale:
+                pen = QPen(QColor('#bbbbbb'), 0.8)
+            else:
+                pen = QPen(QColor('#dddddd'), 0.6)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x, 0), QPointF(x, piano_y))
+
+        # ── Teclas blancas ───────────────────────────────────────────────────
+        wpos = 0
+        for n in range(12 * self.OCTAVE_START, 12 * self.OCTAVE_END):
+            pc = n % 12
+            if pc not in self.WHITE_KEYS:
+                continue
+            x1 = self.MARGIN + wpos * wkw
+            x2 = x1 + wkw
+            wpos += 1
+            is_root = (pc == self._root_note)
+            fill = QColor(255, 255, 220) if is_root else QColor(255, 255, 255)
+            painter.setBrush(QBrush(fill))
+            painter.setPen(QPen(QColor(128, 128, 128), 1))
+            painter.drawRect(QRectF(x1, piano_y, wkw, piano_h))
+            # Etiqueta
+            lbl  = NOTE_NAMES[pc]
+            font = QFont('monospace', max(5, int(wkw * 0.42)))
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(0, 0, 0)))
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(lbl)
+            painter.drawText(int((x1 + x2)/2 - tw/2),
+                             int(piano_y + piano_h * 0.93 + fm.height()/2), lbl)
+
+        # ── Teclas negras ────────────────────────────────────────────────────
+        cpos = 0
+        for n in range(12 * self.OCTAVE_START, 12 * self.OCTAVE_END):
+            pc = n % 12
+            x1 = self.MARGIN + cpos * bkw
+            x2 = x1 + bkw
+            cpos += 1
+            if pc in self.WHITE_KEYS:
+                continue
+            is_root = (pc == self._root_note)
+            fill = QColor(0, 0, 80) if is_root else QColor(0, 0, 0)
+            painter.setBrush(QBrush(fill))
+            painter.setPen(QPen(QColor(128, 128, 128), 1))
+            painter.drawRect(QRectF(x1, piano_y, bkw, bk_h))
+            # Etiqueta
+            lbl  = NOTE_NAMES[pc]
+            font = QFont('monospace', max(4, int(bkw * 0.42)))
+            painter.setFont(font)
+            painter.setPen(QPen(QColor(255, 255, 255)))
+            fm = painter.fontMetrics()
+            tw = fm.horizontalAdvance(lbl)
+            painter.drawText(int((x1 + x2)/2 - tw/2),
+                             int(piano_y + bk_h * 0.55 + fm.height()/2), lbl)
+
+        painter.end()
+
+
+# ---------------------------------------------------------------------------
 # Widget completo con botones de escala
 # ---------------------------------------------------------------------------
 class ChromaticWheelWidget(QWidget):
@@ -608,16 +729,24 @@ class ChromaticWheelWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle('Chromatic Scale Wheel')
-        self.setMinimumSize(480, 560)
+        self.setMinimumSize(900, 650)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        # Layout raíz: horizontal (rueda | piano+botones)
+        root_layout = QHBoxLayout(self)
+        root_layout.setContentsMargins(8, 8, 8, 8)
+        root_layout.setSpacing(8)
+
+        # --- Lado izquierdo: rueda + botones de escala ---
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(6)
 
         self.wheel_view = ChromaticWheelView()
         self.wheel_view.scaleChanged.connect(self.scaleChanged)
+        self.wheel_view.scaleChanged.connect(self._on_scale_changed)
         self.wheel_view.ledToggled.connect(self._on_led_manually_toggled)
-        layout.addWidget(self.wheel_view, stretch=1)
+        left_layout.addWidget(self.wheel_view, stretch=1)
 
         # Botones de escalas
         btn_frame = QFrame()
@@ -674,10 +803,25 @@ class ChromaticWheelWidget(QWidget):
         clear_btn.clicked.connect(self._clear_all)
         btn_layout.addWidget(clear_btn)
 
-        layout.addWidget(btn_frame)
+        left_layout.addWidget(btn_frame)
+        root_layout.addWidget(left_widget, stretch=0)
 
-        # Activar Major por defecto
+        # Separador vertical
+        sep = QFrame()
+        sep.setFrameShape(QFrame.VLine)
+        sep.setFrameShadow(QFrame.Sunken)
+        root_layout.addWidget(sep)
+
+        # --- Lado derecho: piano con líneas ---
+        self.piano = PianoWidget()
+        root_layout.addWidget(self.piano, stretch=1)
+
+        # Estado inicial
         self._scale_buttons['Major'].setChecked(True)
+        self.piano.set_scale(0, SCALES['Major'])
+
+    def _on_scale_changed(self, root: int, mask: int):
+        self.piano.set_scale(root, mask)
 
     def _on_led_manually_toggled(self, note_index: int, state: bool):
         for btn in self._scale_buttons.values():
