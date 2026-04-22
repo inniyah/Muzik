@@ -1144,16 +1144,45 @@ class ChordSelectorView(QGraphicsView):
         return sorted(set(semitones))
 
     def set_scale(self, root_note, scale_mask):
-        had_chord_root = self._chord_root
+        prev_chord_root = self._chord_root
+        prev_selected   = dict(self._selected)
+        had_selection   = any(v for v in prev_selected.values())
         self._scale_mask = scale_mask
-        self._chord_root = root_note
-        # Si había una raíz de acorde seleccionada, recalcular el acorde
-        if had_chord_root is not None and any(v for v in self._selected.values()):
+
+        # Mantener raíz del acorde si sigue en la nueva escala
+        if prev_chord_root is not None and (scale_mask & (1 << prev_chord_root)):
+            self._chord_root = prev_chord_root
+        else:
+            self._chord_root = root_note
+            prev_selected = {}   # raíz cambió, no tiene sentido mantener selección
+
+        if had_selection and prev_selected:
+            # Intentar mantener la selección exacta
+            # Solo eliminar los grados que ya no estén en la escala
             self._selected = {}
-            self._auto_select_chord()
+            all_valid = True
+            for line, label in prev_selected.items():
+                if label is None:
+                    self._selected[line] = None
+                    continue
+                if self._in_scale_with(label, self._chord_root, scale_mask):
+                    self._selected[line] = label
+                else:
+                    all_valid = False
+            # Si hubo algún grado inválido, recalcular el acorde completo
+            if not all_valid:
+                self._selected = {}
+                self._auto_select_chord()
         else:
             self._selected = {}
+
         self._update_nodes()
+
+    def _in_scale_with(self, degree_label, chord_root, scale_mask):
+        """¿El grado está en la escala dada con la raíz dada?"""
+        deg    = DEGREE_SEMITONE[degree_label]
+        abs_pc = (chord_root + deg) % 12
+        return bool(scale_mask & (1 << abs_pc))
 
     def set_chord_root(self, chord_root):
         self._chord_root = chord_root
@@ -1493,12 +1522,8 @@ class ChromaticWheelWidget(QWidget):
     def _on_root_changed(self):
         for btn in self._scale_buttons.values():
             btn.setChecked(False)
-        # Al girar la rueda cambia la raíz pero los LEDs (escala) se mantienen
-        # Recalcular con la nueva raíz+escala
-        root = self.wheel_view.get_root_note()
-        mask = self.wheel_view.get_scale_mask()
-        self.chord_root_bar.set_scale(root, mask)
-        self.chord_selector.set_scale(root, mask)
+        # _on_scale_changed se encargará de actualizar chord_root_bar y chord_selector
+        # porque scaleChanged también se emite tras rotationDone
 
     def _on_led_manually_toggled(self, note_index: int, state: bool):
         for btn in self._scale_buttons.values():
