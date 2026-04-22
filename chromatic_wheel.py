@@ -646,7 +646,8 @@ class LatticeItem(QGraphicsItem):
         self.update()
 
     def boundingRect(self):
-        return QRectF(0, 0, self._w, self._h)
+        r = max(6.0, self._bkw * 0.55) + 6   # r_node + margen círculo doble
+        return QRectF(-r, -r, self._w + 2*r, self._h + 2*r)
 
     def _node_pos(self, abs_chrom, rep):
         """Posición (x, y) de un nodo dado su posición cromática absoluta y repetición."""
@@ -660,9 +661,27 @@ class LatticeItem(QGraphicsItem):
     def paint(self, painter, option, widget=None):
         painter.setRenderHint(QPainter.Antialiasing)
 
+        # Limpiar área completa incluyendo márgenes de nodos
+        painter.fillRect(self.boundingRect(), QColor(255, 255, 255))
+
         n_chrom    = 12 * (self._oct_end - self._oct_start)
         row_h      = self._row_h
         r_node     = max(6.0, self._bkw * 0.55)
+
+        # ── Líneas verticales de guía (fondo) ────────────────────────────────
+        for pos in range(n_chrom):
+            pc      = pos % 12
+            is_root = (pc == self._root)
+            in_scale= bool(self._mask & (1 << pc))
+            x = self._margin + (pos + 0.5) * self._bkw
+            if is_root:
+                pen = QPen(QColor(180, 180, 180), 0.8)
+            elif in_scale:
+                pen = QPen(QColor(210, 210, 210), 0.6)
+            else:
+                pen = QPen(QColor(235, 235, 235), 0.5)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x, 0), QPointF(x, self._h))
 
         # ── Líneas horizontales: tónica (continua) y tritono (discontinua) ───
         root_row_base   = (self._root * 7) % 12
@@ -672,7 +691,7 @@ class LatticeItem(QGraphicsItem):
         for rep in range(self._n_reps):
             for (base_row, dashed) in [(root_row_base, False), (tritone_row_base, True)]:
                 row = base_row + rep * 12
-                y   = self._h - (row + 1) * row_h + row_h / 2
+                y   = self._h - (row + 1) * row_h
                 pen = QPen(QColor(220, 60, 120), 1.2)
                 if dashed:
                     pen.setStyle(Qt.DashLine)
@@ -869,6 +888,22 @@ class _PianoGraphicsItem(QGraphicsItem):
 
         # Fondo
         painter.fillRect(QRectF(0, 0, self._w, h), QColor(245, 245, 240))
+
+        # ── Líneas verticales de guía ────────────────────────────────────────
+        n_chrom = 12 * (self._oe - self._os)
+        for pos in range(n_chrom):
+            pc      = pos % 12
+            is_root = (pc == self._root)
+            in_scale= bool(self._mask & (1 << pc))
+            x = self._mg + (pos + 0.5) * bkw
+            if is_root:
+                pen = QPen(QColor(180, 180, 180), 0.8)
+            elif in_scale:
+                pen = QPen(QColor(210, 210, 210), 0.6)
+            else:
+                pen = QPen(QColor(235, 235, 235), 0.5)
+            painter.setPen(pen)
+            painter.drawLine(QPointF(x, 0), QPointF(x, h))
 
         # Teclas blancas
         wpos = 0
