@@ -71,6 +71,39 @@ def note_color(note: int, saturation: float = 1.0, value: float = 1.0) -> QColor
     return c
 
 
+def lab_to_rgb(l, a, b):
+    y = (l + 16.) / 116.
+    x = a / 500. + y
+    z = y - b / 200.
+    x = 0.95047 * ((x**3) if (x**3 > 0.008856) else ((x - 16./116.) / 7.787))
+    y = 1.00000 * ((y**3) if (y**3 > 0.008856) else ((y - 16./116.) / 7.787))
+    z = 1.08883 * ((z**3) if (z**3 > 0.008856) else ((z - 16./116.) / 7.787))
+    r = x *  3.2406 + y * -1.5372 + z * -0.4986
+    g = x * -0.9689 + y *  1.8758 + z *  0.0415
+    b = x *  0.0557 + y * -0.2040 + z *  1.0570
+    r = (1.055 * (r**(1./2.4)) - 0.055) if (r > 0.0031308) else (12.92 * r)
+    g = (1.055 * (g**(1./2.4)) - 0.055) if (g > 0.0031308) else (12.92 * g)
+    b = (1.055 * (b**(1./2.4)) - 0.055) if (b > 0.0031308) else (12.92 * b)
+    return [max(0., min(1., r)), max(0., min(1., g)), max(0., min(1., b))]
+
+
+def chord_color(chord_root: int, chord_intervals: list) -> QColor:
+    """Color de un acorde basado en su raíz e intervalos (semitonos desde la raíz)."""
+    if not chord_intervals:
+        return QColor(180, 180, 180)
+    ci = chord_intervals
+    axis_lr  = (sum(ci) / len(ci) - 11./3) / 13.5
+    vdif     = [(((c * 7) % 12) - c / 7.) * 7. / 24. for c in ci]
+    axis_ud  = sum(vdif) / len(vdif) * 3. / 5.
+    nmaj = [(1./(n+1) if (j - i) == 4 else 0.)
+            for n, (i, j) in enumerate(zip(ci[:-1], ci[1:]))]
+    nmin = [(1./(n+1) if (j - i) == 3 else 0.)
+            for n, (i, j) in enumerate(zip(ci[:-1], ci[1:]))]
+    axis_mm  = 5. * (sum(nmaj) - sum(nmin)) / len(ci)
+    rgb = lab_to_rgb(75., (3 * axis_mm + axis_ud) * -20., axis_lr * 80.)
+    return QColor(int(rgb[0]*255), int(rgb[1]*255), int(rgb[2]*255))
+
+
 # ---------------------------------------------------------------------------
 # Item: LED (círculo verde activable)
 # ---------------------------------------------------------------------------
@@ -639,10 +672,17 @@ class LatticeItem(QGraphicsItem):
         self._oct_end   = oct_end
         self._total_rows = TOTAL_ROWS
         self._row_h      = scene_h / TOTAL_ROWS
+        self._chord_root      = 0
+        self._chord_intervals = []   # semitonos del acorde, vacío = sin acorde
 
     def update_scale(self, root_note, scale_mask):
         self._root = root_note
         self._mask = scale_mask
+        self.update()
+
+    def update_chord(self, chord_root: int, chord_intervals: list):
+        self._chord_root      = chord_root
+        self._chord_intervals = sorted(chord_intervals)
         self.update()
 
     def boundingRect(self):
@@ -665,6 +705,61 @@ class LatticeItem(QGraphicsItem):
         row_h      = self._row_h
         r_node     = max(6.0, self._bkw * 0.55)
         total_rows = self._total_rows
+
+        # ── Halos de acorde (Z más bajo, líneas muy anchas y sólidas) ─────────
+        if self._chord_intervals:
+            ci    = self._chord_intervals
+            color = chord_color(self._chord_root, ci)
+            # Conjunto de pitch classes del acorde
+            chord_pcs = set((self._chord_root + s) % 12 for s in ci)
+            halo_w = max(8.0, self._bkw * 0.9)
+
+            # Grupos de intervalos por orden de importancia
+            interval_groups = [
+                [(4, 4), (3, -3), (-4, -4), (-3, 3)],    # terceras / sextas
+                [(7, 1), (-7, -1)],                        # quintas / cuartas
+                [(2, 2), (1, -5), (-2, -2), (-1, 5)],     # segundas / séptimas
+            ]
+
+            for group in interval_groups:
+                pen = QPen(color, halo_w)
+                pen.setCapStyle(Qt.RoundCap)
+                painter.setPen(pen)
+                for abs_row in range(-4, total_rows + 4):
+                    pc = (abs_row % 12 * 7) % 12
+                    if pc not in chord_pcs:
+                        continue
+                    for pos in range(n_chrom):
+                        if pos % 12 != pc:
+                            continue
+                        for dx, dy in group:
+                            pos2     = pos + dx
+                            abs_row2 = abs_row + dy
+                            if pos2 < 0 or pos2 >= n_chrom:
+                                continue
+                            pc2 = pos2 % 12
+                            if pc2 not in chord_pcs:
+                                continue
+                            if abs_row2 % 12 != (pc2 * 7) % 12:
+                                continue
+                            in1 = 0 <= abs_row  < total_rows
+                            in2 = 0 <= abs_row2 < total_rows
+                            if not in1 and not in2:
+                                continue
+                            p1 = self._node_pos(pos,  abs_row)
+                            p2 = self._node_pos(pos2, abs_row2)
+                            if in1 and in2:
+                                painter.drawLine(p1, p2)
+                            else:
+                                # Recortar en los bordes del lattice
+                                y_bot = self._h - row_h
+                                y_top = self._h - total_rows * row_h
+                                cr = QRectF(-self._w, y_top, self._w * 3,
+                                            y_bot - y_top)
+                                painter.save()
+                                painter.setClipRect(cr)
+                                painter.drawLine(p1, p2)
+                                painter.restore()
 
         # ── Líneas verticales de guía (fondo) ────────────────────────────────
         for pos in range(n_chrom):
@@ -857,6 +952,9 @@ class PianoWidget(QGraphicsView):
         self._scale_mask = scale_mask
         self._lattice_item.update_scale(root_note, scale_mask)
         self._piano_item.update_scale(root_note, scale_mask)
+
+    def set_chord(self, chord_root: int, chord_intervals: list):
+        self._lattice_item.update_chord(chord_root, chord_intervals)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1535,9 +1633,13 @@ class ChromaticWheelWidget(QWidget):
 
     def _on_chord_root_selected(self, pc: int):
         self.chord_selector.set_chord_root(pc)
+        # Actualizar halo con el nuevo acorde
+        intervals = self.chord_selector._get_chord()
+        self.piano.set_chord(pc, intervals)
 
     def _on_chord_changed(self, semitones: list):
-        pass   # aquí se conectará la lógica futura
+        chord_root = self.chord_selector._chord_root
+        self.piano.set_chord(chord_root, semitones)
 
     def _on_root_changed(self):
         for btn in self._scale_buttons.values():
